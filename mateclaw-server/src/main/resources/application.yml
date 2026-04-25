@@ -14,14 +14,7 @@ spring:
       max-file-size: 100MB
       max-request-size: 200MB
   profiles:
-    active: dev
-
-  # 数据源（默认 H2，生产切换为 mysql profile）
-  datasource:
-    url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
+    active: mysql
 
   # SQL 初始化由 DatabaseBootstrapRunner 接管，关闭 Spring 自动执行
   sql:

@@ -1,14 +1,34 @@
+---
 spring:
+  config:
+    activate:
+      on-profile: dev
+  # 数据源（默认 H2，生产切换为 mysql profile）
+  datasource:
+    url: jdbc:h2:file:./data/mateclaw;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+---
+spring:
+  config:
+    activate:
+      on-profile: uat
   datasource:
     # createDatabaseIfNotExist=true — MySQL Connector/J 首次连接时若 DB 不存在则自动 CREATE DATABASE。
     # 本仓库所有建表语句都显式指定 utf8mb4 / utf8mb4_unicode_ci，不依赖 DB 默认字符集，所以即便
     # 自动创建的库用了 server 默认字符集也不会影响数据。要求 DB user 具备 CREATE 权限（默认 root 可）。
     # 如果使用受限账号，请提前手工执行：
     #   CREATE DATABASE mateclaw CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+#    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:mateclaw}?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+#    driver-class-name: com.mysql.cj.jdbc.Driver
+#    username: ${DB_USERNAME:root}
+#    password: ${DB_PASSWORD:mateclaw123}
+    url: jdbc:mysql://data.luopc.com:3306/mateclaw?allowPublicKeyRetrieval=true&characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
-    username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:mateclaw123}
+    username: admin
+    password: ENC(PHf9qrA+qX02KG6iubBolr8Umhs/Krqk)
 
   flyway:
     locations:
