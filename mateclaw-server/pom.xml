@@ -12,17 +12,17 @@
     <name>MateClaw Server</name>
     <description>MateClaw - Java+Vue Personal AI Assistant powered by Spring AI Alibaba</description>
 
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.13</version>
-        <relativePath/>
-    </parent>
 <!--    <parent>-->
-<!--        <groupId>com.luopc.platform.parent</groupId>-->
-<!--        <artifactId>platform-boot-3.5</artifactId>-->
-<!--        <version>2.10.16-SNAPSHOT</version>-->
+<!--        <groupId>org.springframework.boot</groupId>-->
+<!--        <artifactId>spring-boot-starter-parent</artifactId>-->
+<!--        <version>3.5.13</version>-->
+<!--        <relativePath/>-->
 <!--    </parent>-->
+    <parent>
+        <groupId>com.luopc.platform.parent</groupId>
+        <artifactId>platform-boot-3.5</artifactId>
+        <version>2.10.16</version>
+    </parent>
     <properties>
         <java.version>21</java.version>
         <spring.boot.version>3.5.13</spring.boot.version>
@@ -362,7 +362,7 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring.boot.version}</version>
                 <configuration>
-                    <mainClass>com.luopc.platform.MarketDataServiceApplication</mainClass>
+                    <mainClass>vip.mate.MateClawApplication</mainClass>
                     <layout>ZIP</layout>
                 </configuration>
                 <executions>

@@ -28,7 +28,7 @@ spring:
     url: jdbc:mysql://data.luopc.com:3306/mateclaw?allowPublicKeyRetrieval=true&characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&useUnicode=true&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
     username: admin
-    password: ENC(PHf9qrA+qX02KG6iubBolr8Umhs/Krqk)
+    password: db_admin@123
 
   flyway:
     locations:
@@ -37,3 +37,6 @@ spring:
   h2:
     console:
       enabled: false
+
+user:
+  home: /home/uat

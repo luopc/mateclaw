@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS mate_hook (
     id                  BIGINT       NOT NULL PRIMARY KEY,
     name                VARCHAR(128) NOT NULL,
     description         VARCHAR(512),
-    enabled             TINYINT(1)   NOT NULL DEFAULT 1,
+    enabled             TINYINT      NOT NULL DEFAULT 1,
     event_type          VARCHAR(64)  NOT NULL,         -- e.g. 'agent:end' / 'tool:error'
     match_expression    TEXT,                          -- JSON: {toolName:'shell.*', 'payload.exitCode.gt':0}
     action_kind         VARCHAR(32)  NOT NULL,         -- BUILTIN | HTTP | SHELL | CHANNEL_MESSAGE

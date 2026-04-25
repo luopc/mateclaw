@@ -17,7 +17,7 @@ spring:
     virtual:
       enabled: true
   profiles:
-    active: mysql
+    include: mysql
 
   # SQL 初始化由 DatabaseBootstrapRunner 接管，关闭 Spring 自动执行
   sql:
