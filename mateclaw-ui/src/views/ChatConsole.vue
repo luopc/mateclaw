@@ -252,6 +252,7 @@
         @deny="handleDeny"
         :enable-talk-mode="!!selectedAgentId"
         :thinking-enabled="thinkingEnabled"
+        :thinking-supported="currentModelSupportsThinking"
         @toggle-thinking="thinkingEnabled = !thinkingEnabled"
         @talk="showTalkMode = true"
       />
@@ -633,6 +634,28 @@ const currentRuntimeModel = computed(() => {
     return `${defaultModel.value.name} (${defaultModel.value.modelName})`
   }
   return currentAgent.value?.modelName || 'default'
+})
+
+/**
+ * RFC-049 PR-1-UI: whether the active runtime model supports <em>any</em> form
+ * of deep thinking (OpenAI reasoning_effort / Kimi native / DeepSeek-Reasoner
+ * native / Anthropic extended thinking). Drives the enable/disable state of
+ * the thinking-depth toggle in ChatInput.
+ *
+ * Reads the broad capability (`supportsThinking`) from ProviderModelInfo,
+ * populated server-side in ModelInfoDTO. The narrow `supportsReasoningEffort`
+ * only covers OpenAI gpt-5/o1/o3/o4 and would wrongly gray out Kimi K2.x,
+ * DeepSeek-Reasoner, and Claude — all of which legitimately support thinking.
+ */
+const currentModelSupportsThinking = computed<boolean>(() => {
+  const providerId = activeModels.value?.activeLlm?.providerId
+  const modelName = activeModels.value?.activeLlm?.model
+  if (!providerId || !modelName) return false
+  const provider = providers.value.find((p) => p.id === providerId)
+  if (!provider) return false
+  const all = [...(provider.models || []), ...(provider.extraModels || [])]
+  const hit = all.find((m) => m.id === modelName || m.name === modelName)
+  return Boolean(hit?.supportsThinking)
 })
 
 const userInitial = computed(() => (localStorage.getItem('username') || 'U').charAt(0).toUpperCase())

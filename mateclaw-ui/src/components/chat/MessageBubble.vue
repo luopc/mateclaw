@@ -89,7 +89,7 @@
                     <el-icon v-else-if="tc.success !== false" class="tc-icon--success"><Select /></el-icon>
                     <el-icon v-else class="tc-icon--error"><CloseBold /></el-icon>
                   </span>
-                  <span class="tool-call__name">{{ tc.name }}</span>
+                  <span class="tool-call__name">{{ getToolLabel(tc.name) }}</span>
                   <span class="tool-call__args" v-if="tc.arguments">{{ truncateArgs(tc.arguments) }}</span>
                 </div>
               </div>
@@ -108,13 +108,13 @@
         <div v-if="pendingApproval" class="approval-inline">
           <el-icon class="approval-inline__icon"><WarningFilled /></el-icon>
           <span v-if="pendingApproval.status === 'pending_approval'" class="approval-inline__text">
-            {{ $t('chat.approvalWaiting') }} <code>{{ pendingApproval.toolName }}</code>
+            {{ $t('chat.approvalWaiting') }} <code>{{ getToolLabel(pendingApproval.toolName) }}</code>
           </span>
           <span v-else-if="pendingApproval.status === 'approved'" class="approval-inline__text approval-inline--approved">
-            {{ $t('chat.approved') }}: <code>{{ pendingApproval.toolName }}</code>
+            {{ $t('chat.approved') }}: <code>{{ getToolLabel(pendingApproval.toolName) }}</code>
           </span>
           <span v-else class="approval-inline__text approval-inline--denied">
-            {{ $t('chat.denied') }}: <code>{{ pendingApproval.toolName }}</code>
+            {{ $t('chat.denied') }}: <code>{{ getToolLabel(pendingApproval.toolName) }}</code>
           </span>
         </div>
 
@@ -141,6 +141,12 @@
         <div v-if="status === 'stopped' || status === 'interrupted'" class="stopped-indicator">
           <el-icon><CloseBold /></el-icon>
           <span>{{ status === 'interrupted' ? $t('chat.interrupted') : $t('chat.stopped') }}</span>
+        </div>
+
+        <!-- parse_error content block -->
+        <div v-if="parseErrorText" class="parse-error-card">
+          <el-icon class="parse-error-card__icon"><WarningFilled /></el-icon>
+          <span class="parse-error-card__text">{{ parseErrorText }}</span>
         </div>
 
         <!-- 错误卡片 -->
@@ -273,6 +279,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { useAuthenticatedAttachment } from '@/composables/useAuthenticatedAttachment'
+import { useToolLabel } from '@/composables/useToolLabel'
 import { http } from '@/api'
 import TypingCursor from './TypingCursor.vue'
 import BrowserTimeline from './BrowserTimeline.vue'
@@ -287,6 +294,7 @@ import type { ChatErrorInfo } from '@/types/chatError'
 
 const { renderMarkdown } = useMarkdownRenderer()
 const { t } = useI18n()
+const { getToolLabel } = useToolLabel()
 const { blobUrls, loadAllImages, loadAllVideos, downloadFile, openImage, getDisplayUrl, revokeAll } = useAuthenticatedAttachment()
 
 interface Props {
@@ -438,6 +446,12 @@ const displayContent = computed(() => {
   // 有错误卡片时隐藏 [错误] 原始文本，避免重复展示
   if (status.value === 'failed' && errorInfo.value && text.startsWith('[错误]')) return ''
   return text
+})
+
+// --- parse_error detection ---
+const parseErrorText = computed(() => {
+  const errorPart = props.message.contentParts?.find(p => p.type === 'parse_error')
+  return errorPart?.text || ''
 })
 
 const renderedContent = computed(() => {
@@ -1080,6 +1094,31 @@ watch(isGenerating, (generating) => {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* ==================== parse_error card ==================== */
+.parse-error-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mc-warning, #f59e0b) 8%, var(--mc-bg-elevated, #f8fafc));
+  border: 1px solid color-mix(in srgb, var(--mc-warning, #f59e0b) 25%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--mc-text-secondary, #64748b);
+}
+
+.parse-error-card__icon {
+  flex-shrink: 0;
+  color: var(--mc-warning, #f59e0b);
+  margin-top: 1px;
+}
+
+.parse-error-card__text {
+  word-break: break-word;
 }
 
 /* ==================== 审批面板 ==================== */

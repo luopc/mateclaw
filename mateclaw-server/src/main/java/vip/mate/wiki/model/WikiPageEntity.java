@@ -42,6 +42,10 @@ public class WikiPageEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String sourceRawIds;
 
+    /** RFC-047 P2: paired source lineage — JSON array of {rawId, rawTitle} objects. Canonical; dual-written with sourceRawIds. */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private String sourceEntries;
+
     /** Page type: entity / concept / source / synthesis */
     private String pageType;
 
@@ -53,6 +57,21 @@ public class WikiPageEntity {
 
     /** 最后更新者：ai / manual */
     private String lastUpdatedBy;
+
+    /**
+     * RFC-051 PR-2: protection flag. {@code locked=1} blocks AI/tool/UI deletion
+     * and batch cleanup; combined with {@code pageType="system"} for the
+     * built-in {@code overview} / {@code log} pages.
+     */
+    private Integer locked;
+
+    /**
+     * RFC-051 PR-7: soft-archive flag. {@code archived=1} hides the page from
+     * default list / search / related results without destroying it. Used to
+     * tuck away pages that are no longer relevant but whose history (citations,
+     * source-raw lineage) should stay queryable.
+     */
+    private Integer archived;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;

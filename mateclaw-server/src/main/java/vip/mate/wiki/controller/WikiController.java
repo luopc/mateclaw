@@ -186,12 +186,33 @@ public class WikiController {
     // ==================== Raw Materials ====================
 
     @RequireWorkspaceRole("viewer")
-    @Operation(summary = "获取原始材料列表")
+    @Operation(summary = "获取原始材料列表（含每条材料生成的页面数）")
     @GetMapping("/knowledge-bases/{kbId}/raw")
-    public R<List<WikiRawMaterialEntity>> listRaw(@PathVariable Long kbId,
-                                                    @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+    public R<List<Map<String, Object>>> listRaw(@PathVariable Long kbId,
+                                                 @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
-        return R.ok(rawService.listByKbId(kbId));
+        List<WikiRawMaterialEntity> raws = rawService.listByKbId(kbId);
+        List<Map<String, Object>> result = new java.util.ArrayList<>(raws.size());
+        for (WikiRawMaterialEntity raw : raws) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            // Serialize all entity fields via Jackson-friendly approach
+            item.put("id", raw.getId());
+            item.put("kbId", raw.getKbId());
+            item.put("title", raw.getTitle());
+            item.put("sourceType", raw.getSourceType());
+            item.put("processingStatus", raw.getProcessingStatus());
+            item.put("errorMessage", raw.getErrorMessage());
+            item.put("progressPhase", raw.getProgressPhase());
+            item.put("progressDone", raw.getProgressDone());
+            item.put("progressTotal", raw.getProgressTotal());
+            item.put("contentHash", raw.getContentHash());
+            item.put("createTime", raw.getCreateTime());
+            item.put("updateTime", raw.getUpdateTime());
+            // Enriched field: page count derived from this raw material
+            item.put("pageCount", pageService.countBySourceRawId(kbId, raw.getId()));
+            result.add(item);
+        }
+        return R.ok(result);
     }
 
     @RequireWorkspaceRole("member")
@@ -277,11 +298,13 @@ public class WikiController {
     // ==================== Wiki Pages ====================
 
     @RequireWorkspaceRole("viewer")
-    @Operation(summary = "获取 Wiki 页面列表")
+    @Operation(summary = "获取 Wiki 页面列表（可按原始材料过滤）")
     @GetMapping("/knowledge-bases/{kbId}/pages")
     public R<List<WikiPageEntity>> listPages(@PathVariable Long kbId,
+                                              @RequestParam(required = false) Long rawId,
                                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
+        if (rawId != null) return R.ok(pageService.listBySourceRawId(kbId, rawId));
         return R.ok(pageService.listByKbId(kbId));
     }
 
@@ -336,6 +359,40 @@ public class WikiController {
                                                  @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
         verifyKBWorkspace(kbId, workspaceId);
         return R.ok(pageService.getBacklinks(kbId, slug));
+    }
+
+    // RFC-051 PR-7 follow-up: archive surfaces. Default-list is filtered, so the UI
+    // needs a dedicated endpoint to enumerate archived pages and a way to flip the
+    // flag via REST (the agent tools wiki_archive_page / wiki_unarchive_page already
+    // exist, but the admin UI shouldn't have to go through agent plumbing).
+
+    @RequireWorkspaceRole("viewer")
+    @Operation(summary = "列出知识库中所有 archived=1 的页面（不含 content）")
+    @GetMapping("/knowledge-bases/{kbId}/pages/archived")
+    public R<List<WikiPageEntity>> listArchivedPages(@PathVariable Long kbId,
+                                                      @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        return R.ok(pageService.listArchivedByKbId(kbId));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "归档单个页面（软归档；可恢复）")
+    @PostMapping("/knowledge-bases/{kbId}/pages/{slug}/archive")
+    public R<Map<String, Object>> archivePage(@PathVariable Long kbId, @PathVariable String slug,
+                                               @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean changed = pageService.setArchived(kbId, slug, true);
+        return R.ok(Map.of("slug", slug, "archived", true, "changed", changed));
+    }
+
+    @RequireWorkspaceRole("admin")
+    @Operation(summary = "取消归档")
+    @PostMapping("/knowledge-bases/{kbId}/pages/{slug}/unarchive")
+    public R<Map<String, Object>> unarchivePage(@PathVariable Long kbId, @PathVariable String slug,
+                                                 @RequestHeader(value = "X-Workspace-Id", required = false) Long workspaceId) {
+        verifyKBWorkspace(kbId, workspaceId);
+        boolean changed = pageService.setArchived(kbId, slug, false);
+        return R.ok(Map.of("slug", slug, "archived", false, "changed", changed));
     }
 
     // ==================== Processing ====================

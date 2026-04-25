@@ -3,10 +3,12 @@ package vip.mate.agent.graph;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import vip.mate.agent.AssistantThinkingRelay;
 import vip.mate.channel.web.ChatStreamTracker;
 
 import reactor.core.Disposable;
@@ -256,9 +258,25 @@ public class NodeStreamingChatHelper {
         }
     }
 
+    /**
+     * Broadcast a lightweight progress event so the frontend shows activity
+     * during silent LLM calls (e.g. triage). Sent as a "progress" SSE event.
+     */
+    public void broadcastProgress(String conversationId, String message) {
+        if (streamTracker == null || conversationId == null || conversationId.isEmpty()) {
+            return;
+        }
+        streamTracker.broadcastObject(conversationId, "progress",
+                Map.of("message", message != null ? message : ""));
+    }
+
     // ==================== 重试配置 ====================
 
     private static final int MAX_RETRIES = 5;
+    // RATE_LIMIT: fail fast to failover chain — staying on the same
+    // provider during a rate-limit window wastes time without recovery.
+    // SERVER_ERROR keeps MAX_RETRIES (upstream flaps often self-heal).
+    private static final int MAX_RETRIES_RATE_LIMIT = 2;
     private static final long BACKOFF_BASE_MS = 3000;
     private static final long BACKOFF_CAP_MS = 60_000;
 
@@ -392,9 +410,18 @@ public class NodeStreamingChatHelper {
             }
         }
 
+        // D-6: performance counters
+        int retryCount = 0;
+        long totalBackoffMs = 0;
+        int failoverCount = 0;
+        int llmCallCount = 0;
+        long callStartMs = System.currentTimeMillis();
+
         // 主模型重试循环
         StreamResult lastResult = null;
         if (!primarySkipped) for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            llmCallCount++;
+            if (attempt > 0) retryCount++;
             lastResult = doStreamCall(chatModel, prompt, conversationId, phase, broadcast, attempt);
             if (lastResult != null) {
                 // PTL: 不重试，直接返回给上层 Node 处理
@@ -448,6 +475,7 @@ public class NodeStreamingChatHelper {
                 if (lastResult.errorMessage() == null || lastResult.errorType() == ErrorType.NONE) {
                     recordPrimary(true);
                     addToPool(primaryProviderId);
+                    logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                     return lastResult;
                 }
                 // Any other non-null errored result with a classified type that doStreamCall
@@ -455,6 +483,7 @@ public class NodeStreamingChatHelper {
                 // must exit — otherwise we silently spin through attempts and waste seconds
                 // per turn on unrecoverable errors like DashScope's "url error" / unknown model.
                 recordPrimary(false);
+                logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return lastResult;
             }
             // lastResult == null 表示需要重试
@@ -495,6 +524,8 @@ public class NodeStreamingChatHelper {
                 broadcastDelta(conversationId, "warning",
                         buildDeltaJson("主模型不可用，正在切换到备选模型 (" + (i + 1) + "/" + fallbackChain.size() + ")..."));
             }
+            failoverCount++;
+            llmCallCount++;
             StreamResult fallbackResult = doStreamCall(fallback, prompt, conversationId,
                     phase + "_fallback_" + (i + 1), broadcast, 0);
             // Accept only fully successful fallbacks. Non-successful results (auth
@@ -505,6 +536,7 @@ public class NodeStreamingChatHelper {
                     && fallbackResult.errorMessage() == null) {
                 if (healthTracker != null) healthTracker.recordSuccess(entry.providerId());
                 addToPool(entry.providerId());
+                logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
                 return fallbackResult;
             }
             if (healthTracker != null) healthTracker.recordFailure(entry.providerId());
@@ -517,8 +549,17 @@ public class NodeStreamingChatHelper {
             }
         }
 
+        logPerfSummary(phase, conversationId, callStartMs, llmCallCount, retryCount, failoverCount);
         return lastResult != null ? lastResult
                 : buildErrorResult("LLM 调用失败，已达最大重试次数", conversationId, phase);
+    }
+
+    /** D-6: log a structured performance summary for the LLM call phase. */
+    private void logPerfSummary(String phase, String conversationId, long startMs,
+                                int llmCallCount, int retryCount, int failoverCount) {
+        long totalMs = System.currentTimeMillis() - startMs;
+        log.info("[{}] perf_summary: conversationId={} total_ms={} llm_call_count={} retry_count={} failover_count={}",
+                phase, conversationId, totalMs, llmCallCount, retryCount, failoverCount);
     }
 
     /**
@@ -528,6 +569,67 @@ public class NodeStreamingChatHelper {
     private StreamResult doStreamCall(ChatModel chatModel, Prompt prompt,
                                        String conversationId, String phase,
                                        boolean broadcast, int attempt) {
+        // PR-2 L4 (RFC-049 §2.4.2): normalize as a pre-egress step (not only on retry).
+        // Strip reasoning_content from prior-turn AssistantMessages (i <= lastUserIdx),
+        // preserving in-turn thinking (i > lastUserIdx) so DeepSeek's contract holds.
+        // The returned Prompt shares `options` by reference with the input prompt.
+        Prompt outbound = stripThinkingFromPrompt(prompt);
+
+        // PR-2 L3 (RFC-049 §2.3.2): producer-side relay stash. Extract per-assistant
+        // thinking from the normalized prompt (cross-turn positions are already "" due
+        // to strip), stash with the caller's original `user` field, and overwrite
+        // `options.user` with the relay token. The consumer in
+        // AgentGraphBuilder.patchReasoningContent restores the original user when
+        // rebuilding the outbound ChatCompletionRequest; the token never reaches the
+        // provider. We only activate relay on OpenAiChatOptions paths — Anthropic has
+        // its own thinking mechanism (extended thinking via AnthropicChatOptions.thinking).
+        String relayToken = null;
+        String originalUser = null;
+        org.springframework.ai.openai.OpenAiChatOptions oaiOptsForRelay = null;
+        if (outbound.getOptions() instanceof org.springframework.ai.openai.OpenAiChatOptions oaiOpts) {
+            List<String> thinkings = extractAssistantThinkings(outbound);
+            if (thinkings.stream().anyMatch(s -> !s.isEmpty())) {
+                originalUser = oaiOpts.getUser();
+                relayToken = AssistantThinkingRelay.stash(thinkings, originalUser);
+                oaiOpts.setUser(relayToken);
+                oaiOptsForRelay = oaiOpts;
+            }
+        }
+
+        try {
+            return doStreamCallInner(chatModel, outbound, conversationId, phase, broadcast, attempt);
+        } finally {
+            // Idempotent: if consumer already took the entry, discard is a no-op.
+            if (relayToken != null) {
+                AssistantThinkingRelay.discard(relayToken);
+                if (oaiOptsForRelay != null) {
+                    oaiOptsForRelay.setUser(originalUser);
+                }
+            }
+        }
+    }
+
+    /**
+     * PR-2: Extract per-assistant {@code reasoningContent} from a Prompt's messages in
+     * order. Non-assistant messages are skipped; assistants with no metadata or no
+     * reasoningContent yield {@code ""} so the returned list's positional index aligns
+     * with the assistant-message index as seen by the consumer.
+     */
+    private static List<String> extractAssistantThinkings(Prompt prompt) {
+        List<String> out = new ArrayList<>();
+        for (Message m : prompt.getInstructions()) {
+            if (m instanceof AssistantMessage am) {
+                Map<String, Object> meta = am.getMetadata();
+                Object rc = meta != null ? meta.get("reasoningContent") : null;
+                out.add(rc instanceof String s ? s : "");
+            }
+        }
+        return out;
+    }
+
+    private StreamResult doStreamCallInner(ChatModel chatModel, Prompt prompt,
+                                            String conversationId, String phase,
+                                            boolean broadcast, int attempt) {
         if (attempt > 0) {
             long delay = Math.min(BACKOFF_BASE_MS * (1L << (attempt - 1)), BACKOFF_CAP_MS);
             // 加入 jitter 防止雷群效应（Hermes 风格）
@@ -540,11 +642,22 @@ public class NodeStreamingChatHelper {
                 broadcastDelta(conversationId, "warning",
                         buildDeltaJson("⏱️ 请求频率受限，等待 " + (delay / 1000) + " 秒后重试（第 " + attempt + "/" + MAX_RETRIES + " 次）..."));
             }
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return buildErrorResult("LLM 调用被中断", conversationId, phase);
+            // Poll stop flag every 100ms so user Stop is honored mid-backoff.
+            long remaining = delay;
+            while (remaining > 0) {
+                if (streamTracker != null && streamTracker.isStopRequested(conversationId)) {
+                    log.info("[{}] Stop requested during backoff — aborting retry: conversationId={}",
+                            phase, conversationId);
+                    throw new CancellationException("Stream stopped by user");
+                }
+                long slice = Math.min(100, remaining);
+                try {
+                    Thread.sleep(slice);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return buildErrorResult("LLM 调用被中断", conversationId, phase);
+                }
+                remaining -= slice;
             }
         }
 
@@ -620,6 +733,10 @@ public class NodeStreamingChatHelper {
                     }
 
                     // 4. 提取 token usage（通常最后一个 chunk 携带完整 usage）
+                    // E-4 probe: log metadata keys to check for x-ratelimit-* headers
+                    if (chatResponse.getMetadata() != null && log.isDebugEnabled()) {
+                        log.debug("[E4-probe] metadata keys: {}", chatResponse.getMetadata().keySet());
+                    }
                     if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
                         var usage = chatResponse.getMetadata().getUsage();
                         if (usage.getPromptTokens() != null && usage.getPromptTokens() > 0) {
@@ -731,11 +848,17 @@ public class NodeStreamingChatHelper {
                         conversationId, phase, errorType);
             }
 
-            // Rate limit / Server error: 重试
-            if (attempt < MAX_RETRIES && (errorType == ErrorType.RATE_LIMIT || errorType == ErrorType.SERVER_ERROR)) {
-                log.warn("[{}] Retryable error (attempt {}/{}, type={}): {}",
-                        phase, attempt, MAX_RETRIES, errorType, error.getMessage());
-                return null;  // 返回 null 触发重试
+            // Rate limit / Server error: retryable, but with different budgets.
+            // RATE_LIMIT: cap at 2 retries then failover (RFC 06 D-2).
+            // SERVER_ERROR: keep full MAX_RETRIES — upstream flaps often self-heal.
+            if (errorType == ErrorType.RATE_LIMIT || errorType == ErrorType.SERVER_ERROR) {
+                int effectiveMaxRetries = (errorType == ErrorType.RATE_LIMIT)
+                        ? MAX_RETRIES_RATE_LIMIT : MAX_RETRIES;
+                if (attempt < effectiveMaxRetries) {
+                    log.warn("[{}] Retryable error (attempt {}/{}, type={}): {}",
+                            phase, attempt, effectiveMaxRetries, errorType, error.getMessage());
+                    return null;  // 返回 null 触发重试
+                }
             }
 
             // 不可重试或已耗尽重试
@@ -792,9 +915,7 @@ public class NodeStreamingChatHelper {
             }
         }
 
-        AssistantMessage assembledMessage = !finalToolCalls.isEmpty()
-                ? AssistantMessage.builder().content(fullContent).toolCalls(finalToolCalls).build()
-                : new AssistantMessage(fullContent);
+        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
 
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
@@ -823,20 +944,39 @@ public class NodeStreamingChatHelper {
             }
         }
 
-        AssistantMessage assembledMessage;
-        if (!finalToolCalls.isEmpty()) {
-            assembledMessage = AssistantMessage.builder()
-                    .content(fullContent)
-                    .toolCalls(finalToolCalls)
-                    .build();
-        } else {
-            assembledMessage = new AssistantMessage(fullContent);
-        }
+        AssistantMessage assembledMessage = buildAssistantMessageWithThinking(fullContent, fullThinking, finalToolCalls);
 
         recordCacheMetrics(phase, promptTok, completionTok, cacheReadTok, cacheWriteTok);
         return new StreamResult(fullContent, fullThinking, assembledMessage,
                 finalToolCalls, !finalToolCalls.isEmpty(), promptTok, completionTok,
                 partial, errorMsg, ErrorType.NONE, false, cacheReadTok, cacheWriteTok);
+    }
+
+    /**
+     * PR-2 L2 (RFC-049): Build an {@link AssistantMessage} that persists the per-turn
+     * {@code fullThinking} into the message's properties under key {@code "reasoningContent"}.
+     *
+     * <p>This is the linchpin of the structural fix: without writing thinking back into
+     * the AssistantMessage that enters the next ReAct round's state, the outbound
+     * request's {@code reasoning_content} is lost (Spring AI 1.1.4's
+     * {@code OpenAiChatModel.lambda$createRequest$20} hardcodes {@code null} on the
+     * outbound conversion, so the relay in {@code AssistantThinkingRelay} is the only
+     * way back — see RFC-049 §2.3 L3).
+     *
+     * <p>Note the Spring AI naming asymmetry: the builder method is
+     * {@code .properties(Map)} but the reader is {@code getMetadata()} (see
+     * {@link #stripThinkingFromPrompt} L937).
+     */
+    private static AssistantMessage buildAssistantMessageWithThinking(
+            String fullContent, String fullThinking, List<AssistantMessage.ToolCall> finalToolCalls) {
+        AssistantMessage.Builder builder = AssistantMessage.builder().content(fullContent);
+        if (finalToolCalls != null && !finalToolCalls.isEmpty()) {
+            builder.toolCalls(finalToolCalls);
+        }
+        if (fullThinking != null && !fullThinking.isEmpty()) {
+            builder.properties(Map.of("reasoningContent", fullThinking));
+        }
+        return builder.build();
     }
 
     /**
@@ -857,26 +997,47 @@ public class NodeStreamingChatHelper {
 
     /** 构建纯错误 StreamResult（无任何内容） */
     /**
-     * 从 Prompt 中剥离旧 AssistantMessage 的 thinking/reasoningContent metadata。
-     * 保留最新一条 AssistantMessage 的 thinking（可能是模型需要的签名）。
+     * Strip {@code reasoningContent} from AssistantMessages that belong to <em>prior</em>
+     * user turns, keeping thinking for messages within the <strong>current</strong> user
+     * turn intact.
+     *
+     * <p>PR-2 L4 (RFC-049 §2.4.1): The old semantics "keep only the last AssistantMessage's
+     * thinking" broke DeepSeek's contract for multi-round tool-calls within a single user
+     * turn (DeepSeek requires all in-turn assistant thinking to be passed back on subsequent
+     * rounds). Now the boundary is the most recent {@link UserMessage}: AssistantMessages at
+     * index {@code <= lastUserIdx} are prior-turn history (their thinking must be stripped
+     * per DeepSeek's "reset across user turns" rule); AssistantMessages at {@code > lastUserIdx}
+     * are in-turn (their thinking must be preserved).
+     *
+     * <p>PR-2 L4 (RFC-049 §2.4.2): This method is called as a normal pre-egress step from
+     * {@link #doStreamCall}, not only from the {@code THINKING_BLOCK_ERROR} retry path. The
+     * retry path still calls it too (idempotent), serving as defensive re-application.
+     *
+     * <p>Note: {@code Prompt.getOptions()} is preserved by reference into the returned
+     * {@code Prompt} (this is existing behavior). Callers rely on that — mutations to
+     * {@code options.user} via {@link AssistantThinkingRelay} must stay visible after
+     * normalize.
      */
-    private Prompt stripThinkingFromPrompt(Prompt prompt) {
+    static Prompt stripThinkingFromPrompt(Prompt prompt) {
         List<Message> messages = prompt.getInstructions();
-        // 找最后一个 AssistantMessage
-        int lastAssistantIdx = -1;
+
+        // Find most recent UserMessage — boundary of the current user turn
+        int lastUserIdx = -1;
         for (int i = messages.size() - 1; i >= 0; i--) {
-            if (messages.get(i) instanceof AssistantMessage) {
-                lastAssistantIdx = i;
+            if (messages.get(i) instanceof UserMessage) {
+                lastUserIdx = i;
                 break;
             }
         }
-        List<Message> cleaned = new ArrayList<>();
+
+        int strippedCount = 0;
+        List<Message> cleaned = new ArrayList<>(messages.size());
         for (int i = 0; i < messages.size(); i++) {
             Message msg = messages.get(i);
-            if (msg instanceof AssistantMessage am && i != lastAssistantIdx) {
+            // Only strip prior-turn assistant thinking (i <= lastUserIdx); in-turn (i > lastUserIdx) stays
+            if (msg instanceof AssistantMessage am && i <= lastUserIdx) {
                 Map<String, Object> meta = am.getMetadata();
                 if (meta != null && meta.containsKey("reasoningContent")) {
-                    // 用 builder 重建 AssistantMessage，去掉 reasoningContent
                     Map<String, Object> cleanMeta = new java.util.HashMap<>(meta);
                     cleanMeta.remove("reasoningContent");
                     AssistantMessage.Builder builder = AssistantMessage.builder()
@@ -889,13 +1050,17 @@ public class NodeStreamingChatHelper {
                         builder.media(am.getMedia());
                     }
                     cleaned.add(builder.build());
+                    strippedCount++;
                     continue;
                 }
             }
             cleaned.add(msg);
         }
-        log.info("[ThinkingRecovery] Stripped thinking blocks from {} messages, last assistant at index {}",
-                messages.size(), lastAssistantIdx);
+        if (strippedCount > 0) {
+            log.debug("[ThinkingRecovery] Stripped reasoningContent from {} prior-turn assistant messages "
+                            + "(lastUserIdx={}, total={})",
+                    strippedCount, lastUserIdx, messages.size());
+        }
         return new Prompt(cleaned, prompt.getOptions());
     }
 

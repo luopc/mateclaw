@@ -27,6 +27,14 @@ public final class GraphEventPublisher {
     public static final String EVENT_STEP_STARTED = "plan_step_started";
     public static final String EVENT_STEP_COMPLETED = "plan_step_completed";
     public static final String EVENT_TOOL_APPROVAL_REQUESTED = "tool_approval_requested";
+    /** RFC-06 D-6: lightweight performance summary emitted per-phase. */
+    public static final String EVENT_PERF_SUMMARY = "perf_summary";
+    /**
+     * RFC-052: a tool with returnDirect=true completed; its full result is
+     * carried in the payload and is intended to be rendered as part of the
+     * assistant message (renderAs=assistant_message), bypassing the LLM.
+     */
+    public static final String EVENT_TOOL_DIRECT_RESULT = "tool_direct_result";
 
     /**
      * 事件记录
@@ -119,6 +127,39 @@ public final class GraphEventPublisher {
         data.put("findings", findings != null ? findings : List.of());
         data.put("timestamp", ts);
         return new GraphEvent(EVENT_TOOL_APPROVAL_REQUESTED, Map.copyOf(data), ts);
+    }
+
+    /**
+     * RFC-06 D-6: emit a lightweight performance summary for a phase.
+     * Consumers (dashboard, audit, _usage_final) can aggregate these
+     * to reconstruct per-turn latency profiles without full tracing.
+     *
+     * @param phase           e.g. "triage", "reasoning", "tool_execution"
+     * @param metrics         arbitrary key-value pairs (e.g. "retry_count", "backoff_wait_ms")
+     */
+    /**
+     * RFC-052: emit a tool result that was produced by a returnDirect tool.
+     * The full text is carried verbatim and the {@code renderAs="assistant_message"}
+     * hint instructs the SSE consumer (front-end / accumulator) to fold the
+     * payload into the assistant bubble rather than into a tool card.
+     */
+    public static GraphEvent toolDirectResult(String toolCallId, String toolName, String fullResult) {
+        long ts = System.currentTimeMillis();
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("toolCallId", toolCallId != null ? toolCallId : "");
+        data.put("toolName", toolName != null ? toolName : "");
+        data.put("result", fullResult != null ? fullResult : "");
+        data.put("renderAs", "assistant_message");
+        data.put("timestamp", ts);
+        return new GraphEvent(EVENT_TOOL_DIRECT_RESULT, Map.copyOf(data), ts);
+    }
+
+    public static GraphEvent perfSummary(String phase, Map<String, Object> metrics) {
+        long ts = System.currentTimeMillis();
+        Map<String, Object> data = new java.util.HashMap<>(metrics);
+        data.put("phase", phase);
+        data.put("timestamp", ts);
+        return new GraphEvent(EVENT_PERF_SUMMARY, Map.copyOf(data), ts);
     }
 
     // ===== 提取方法 =====

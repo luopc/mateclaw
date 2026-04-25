@@ -64,7 +64,7 @@
           <el-icon><WarningFilled /></el-icon>
         </span>
         <span class="approval-bar__label">{{ t('chat.approvalAllow') }}</span>
-        <span class="approval-bar__tool">{{ pendingApproval.toolName }}</span>
+        <span class="approval-bar__tool">{{ getToolLabel(pendingApproval.toolName) }}</span>
         <span class="approval-bar__label">{{ t('chat.approvalExecute') }}</span>
       </div>
       <div class="approval-bar__actions">
@@ -136,14 +136,16 @@
           <el-icon><Paperclip /></el-icon>
         </button>
 
-        <!-- 深度思考开关 -->
+        <!-- 深度思考开关 (RFC-049 PR-1-UI: 不支持 reasoning_effort 的模型灰态) -->
         <button
           type="button"
           class="action-btn thinking-btn"
-          :class="{ active: thinkingEnabled }"
-          :disabled="disabled"
-          @click="emit('toggle-thinking')"
-          :title="thinkingEnabled ? t('chat.thinkingOn') : t('chat.thinkingOff')"
+          :class="{ active: thinkingEnabled && thinkingSupported, unsupported: !thinkingSupported }"
+          :disabled="disabled || !thinkingSupported"
+          @click="thinkingSupported && emit('toggle-thinking')"
+          :title="!thinkingSupported
+            ? t('chat.thinkingUnsupported')
+            : (thinkingEnabled ? t('chat.thinkingOn') : t('chat.thinkingOff'))"
         >
           <el-icon><MagicStick /></el-icon>
         </button>
@@ -203,6 +205,7 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CloseBold, MagicStick, Microphone, Paperclip, Promotion, Select, Timer, WarningFilled } from '@element-plus/icons-vue'
+import { useToolLabel } from '@/composables/useToolLabel'
 import type { ChatAttachment, PendingApprovalMeta, StreamPhase, QueuedMessage } from '@/types'
 
 interface Props {
@@ -238,6 +241,11 @@ interface Props {
   enableTalkMode?: boolean
   /** 深度思考开关状态 */
   thinkingEnabled?: boolean
+  /**
+   * RFC-049 PR-1-UI: 当前 runtime 模型是否支持 reasoning_effort。false 时按钮灰掉，
+   * 不响应点击，tooltip 提示当前模型不支持深度思考。默认 true 以保持向后兼容。
+   */
+  thinkingSupported?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -256,6 +264,7 @@ const props = withDefaults(defineProps<Props>(), {
   queueSize: 0,
   enableTalkMode: false,
   thinkingEnabled: false,
+  thinkingSupported: true,
 })
 
 const emit = defineEmits<{
@@ -272,6 +281,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { getToolLabel } = useToolLabel()
 
 // 内部状态
 const containerRef = ref<HTMLElement | null>(null)
@@ -595,6 +605,11 @@ defineExpose({
   height: 4px;
   border-radius: 50%;
   background: var(--el-color-primary, #409eff);
+}
+/* RFC-049 PR-1-UI: model doesn't support reasoning_effort — stronger grayed state */
+.thinking-btn.unsupported {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .thinking-btn:hover:not(:disabled) {
   color: var(--el-color-primary, #409eff);

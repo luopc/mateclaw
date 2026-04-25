@@ -179,7 +179,7 @@ export interface MessageMetadata {
 }
 
 export interface MessageContentPart {
-  type: 'text' | 'thinking' | 'image' | 'file' | 'audio' | 'video' | 'tool_call'
+  type: 'text' | 'thinking' | 'image' | 'file' | 'audio' | 'video' | 'tool_call' | 'parse_error'
   text?: string
   fileUrl?: string
   fileName?: string
@@ -194,7 +194,11 @@ export interface MessageContentPart {
 // ==================== 技能 ====================
 export interface Skill {
   id: string | number
+  /** Slug / immutable identifier */
   name: string
+  /** RFC-042 §2.2 — locale display names; null = fall back to `name` */
+  nameZh?: string
+  nameEn?: string
   description?: string
   skillType: string
   icon?: string
@@ -212,6 +216,10 @@ export interface Skill {
   sourceConversationId?: string
   /** RFC-023: 安全扫描状态 (PASSED / FAILED / null) */
   securityScanStatus?: string
+  /** RFC-042 §2.3 — JSON-serialised SkillSecurityFinding[] from last scan */
+  securityScanResult?: string
+  /** RFC-042 §2.3 — wall-clock time of the last scan */
+  securityScanTime?: string
 }
 
 /** 运行时解析状态（来自 /runtime/status） */
@@ -578,6 +586,18 @@ export interface ProviderModelInfo {
   probeOk?: boolean
   /** Short error message when probeOk=false */
   probeError?: string
+  /**
+   * RFC-049 PR-1-UI (narrow): whether the model accepts the OpenAI
+   * `reasoning_effort` parameter. True only for OpenAI reasoning family.
+   */
+  supportsReasoningEffort?: boolean
+  /**
+   * RFC-049 PR-1-UI (broad): whether the model supports any form of deep
+   * thinking (OpenAI reasoning_effort, Kimi/DeepSeek native thinking,
+   * Anthropic extended thinking). This is the field the UI "thinking depth"
+   * toggle should gate on.
+   */
+  supportsThinking?: boolean
 }
 
 export interface ProviderInfo {

@@ -431,7 +431,9 @@ public class ConversationService {
             return objectMapper.readValue(message.getContentParts(), new TypeReference<List<MessageContentPart>>() {});
         } catch (Exception e) {
             log.warn("Failed to parse content_parts for message {}: {}", message.getId(), e.getMessage());
-            return List.of();
+            return List.of(MessageContentPart.parseError(
+                    message.getId() != null ? message.getId().toString() : "unknown",
+                    e.getMessage() != null ? e.getMessage() : "unknown error"));
         }
     }
 
@@ -448,7 +450,7 @@ public class ConversationService {
             }
             switch (part.getType()) {
                 case "text" -> appendSegment(text, part.getText());
-                case "thinking", "tool_call" -> { /* skip — frontend reads these from contentParts directly */ }
+                case "thinking", "tool_call", "parse_error" -> { /* skip — frontend reads these from contentParts directly */ }
                 case "file" -> appendSegment(text, "[附件] " + safe(part.getFileName()));
                 default -> appendSegment(text, part.getText());
             }

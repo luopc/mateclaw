@@ -11,6 +11,8 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
+import vip.mate.memory.event.DreamCompletedEvent;
+import vip.mate.memory.event.DreamFailedEvent;
 import vip.mate.memory.event.MemoryWriteEvent;
 import vip.mate.agent.AgentGraphBuilder;
 import vip.mate.agent.prompt.PromptLoader;
@@ -49,6 +51,7 @@ public class MemoryEmergenceService {
     private final DreamReportMapper dreamReportMapper;
     private final vip.mate.memory.archive.MemoryArchiveService archiveService;
     private final ApplicationEventPublisher eventPublisher;
+    private final vip.mate.memory.fact.contradiction.ContradictionDetector contradictionDetector;
 
     /**
      * Legacy signature — delegates to NIGHTLY mode for backward compatibility.
@@ -203,6 +206,14 @@ public class MemoryEmergenceService {
                     scoredCandidates.size(), promotedEntries, rejectedEntries, memoryDiff,
                     truncate(llmReason, 500));
             persistReport(report);
+
+            // Contradiction detection — synchronous step after persist (D11)
+            try {
+                contradictionDetector.detect(agentId, promotedEntries);
+            } catch (Exception ce) {
+                log.debug("[Memory] Contradiction detection failed (non-fatal): {}", ce.getMessage());
+            }
+
             return report;
 
         } catch (Exception e) {
@@ -384,6 +395,12 @@ public class MemoryEmergenceService {
             dreamReportMapper.insert(entity);
             log.debug("[Memory] DreamReport persisted: agent={}, mode={}, status={}",
                     report.agentId(), report.mode(), report.status());
+            // Publish event for SSE broadcast
+            if (report.status() == DreamStatus.SUCCESS) {
+                eventPublisher.publishEvent(new DreamCompletedEvent(report));
+            } else if (report.status() == DreamStatus.FAILED) {
+                eventPublisher.publishEvent(new DreamFailedEvent(report));
+            }
         } catch (Exception e) {
             log.warn("[Memory] Failed to persist DreamReport for agent={}: {}", report.agentId(), e.getMessage());
         }

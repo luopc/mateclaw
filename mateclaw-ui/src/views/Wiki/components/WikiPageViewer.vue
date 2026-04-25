@@ -29,9 +29,20 @@
         <el-icon><SetUp /></el-icon>
         {{ t('wiki.page.repair') }}
       </button>
-      <button v-if="!editing" class="btn-secondary btn-sm btn-delete" @click="handleDelete">
+      <!-- RFC-051 PR-8: hide delete on protected pages (system / locked). -->
+      <button
+        v-if="!editing && !isProtected"
+        class="btn-secondary btn-sm btn-delete"
+        @click="handleDelete"
+      >
         {{ t('common.delete') }}
       </button>
+      <span v-if="!editing && isSystem" class="system-badge" :title="t('wiki.systemPageHint')">
+        {{ t('wiki.systemPageBadge') }}
+      </span>
+      <span v-if="!editing && isLockedNotSystem" class="locked-badge" :title="t('wiki.lockedPageHint')">
+        {{ t('wiki.lockedPageBadge') }}
+      </span>
     </div>
 
     <!-- Content -->
@@ -79,7 +90,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useWikiStore, type WikiPage } from '@/stores/useWikiStore'
+import { useWikiStore, isProtectedPage, type WikiPage } from '@/stores/useWikiStore'
 import { wikiApi } from '@/api/index'
 import { useMarkdownRenderer } from '@/composables/useMarkdownRenderer'
 import { Link, SetUp } from '@element-plus/icons-vue'
@@ -97,11 +108,25 @@ const backlinks = ref<WikiPage[]>([])
 const citationDrawerOpen = ref(false)
 const enrichToast = ref('')
 
+// RFC-051 PR-8: protection state for delete-button gating + badge rendering.
+const isSystem = computed(() => store.currentPage?.pageType === 'system')
+const isProtected = computed(() => isProtectedPage(store.currentPage))
+const isLockedNotSystem = computed(() => isProtected.value && !isSystem.value)
+
 const renderedContent = computed(() => {
   if (!store.currentPage?.content) return ''
-  const content = store.currentPage.content.replace(/\[\[([^\]]+)\]\]/g, (_match, title) => {
-    const slug = title.trim().toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff\s-]/g, '').replace(/\s+/g, '-')
-    return `<a class="wiki-link" data-slug="${slug}" onclick="return false">${title}</a>`
+  // Build a lookup map: title (normalized) → slug, for resolving [[Title]] links
+  const titleToSlug = new Map<string, string>()
+  for (const p of store.pages) {
+    if (p.title && p.slug) {
+      titleToSlug.set(p.title.trim().toLowerCase(), p.slug)
+    }
+  }
+  const content = store.currentPage.content.replace(/\[\[([^\]]+)\]\]/g, (_match, raw) => {
+    const title = raw.trim()
+    // Prefer exact title match; fall back to slug-style guess
+    const slug = titleToSlug.get(title.toLowerCase()) ?? title.toLowerCase().replace(/\s+/g, '-')
+    return `<a class="wiki-link" data-slug="${slug}">${title}</a>`
   })
   return renderMarkdown(content)
 })
@@ -199,7 +224,30 @@ onMounted(() => {
 .btn-secondary.btn-delete:hover { background: var(--el-color-danger-light-9, #fef0f0); border-color: var(--el-color-danger-light-5, #fab6b6); }
 .btn-secondary.btn-action { color: var(--mc-primary); }
 
-.page-actions-bar { display: flex; gap: 8px; flex-wrap: wrap; }
+.page-actions-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* RFC-051 PR-8: protection badges shown next to action buttons. */
+.system-badge,
+.locked-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+.system-badge {
+  background: var(--mc-primary-bg);
+  color: var(--mc-primary);
+  border: 1px solid var(--mc-primary);
+}
+.locked-badge {
+  background: var(--mc-bg-elevated);
+  color: var(--mc-text-secondary);
+  border: 1px solid var(--mc-border-light);
+}
 
 /* Summary */
 .page-summary { padding: 16px 20px; background: var(--mc-bg-muted); border-radius: 12px; border-left: 3px solid var(--mc-primary); }
